@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+from datetime import datetime, timedelta # ⏰ 시간 계산 도구 추가
 
 # ==========================================
 # 1. 구글 시트 연동
@@ -38,45 +38,33 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 데이터 로드 및 '자동 재계산' (핵심 수정!)
+# 2. 데이터 로드 및 '자동 재계산'
 # ==========================================
 def calculate_status_from_logs(logs_data):
-    """로그 데이터를 기반으로 레벨과 경험치를 처음부터 다시 계산"""
     total_xp = 0
     for log in logs_data:
-        # 로그 형식이 딕셔너리인지 리스트인지 확인하여 처리
         try:
             xp = int(log.get("XP", 0)) if isinstance(log, dict) else int(log[2])
             total_xp += xp
-        except:
-            continue
+        except: continue
 
-    # 레벨 계산 로직
     level = 1
     current_xp = total_xp
-    
     while True:
         req_xp = level * 100
         if current_xp >= req_xp:
             current_xp -= req_xp
             level += 1
-        else:
-            break
+        else: break
             
     return level, current_xp, total_xp
 
 def load_data():
-    # Logs 탭의 모든 데이터를 가져옴
     logs_data = ws_logs.get_all_records()
-    
-    # 가져온 로그로 상태를 재계산 (동기화 문제 해결)
     level, current_xp, total_xp = calculate_status_from_logs(logs_data)
-    
-    # 최신순 정렬
     logs_data.reverse()
     return level, current_xp, total_xp, logs_data
 
-# 데이터 로드
 level, current_xp, total_xp, logs = load_data()
 next_level_xp = level * 100 
 
@@ -106,40 +94,34 @@ def get_tier(lv):
 cur_n, cur_d, cur_c = get_tier(level)
 
 # ==========================================
-# 4. 액션 (서버 저장)
+# 4. 액션 (한국 시간 적용)
 # ==========================================
 def save_to_server(ts, act, xp, val):
-    # 로그 추가
     ws_logs.append_row([ts, act, xp, val])
-    # 상태 시트 업데이트 (참고용, 실제 계산은 로그로 함)
-    # 계산은 다음 새로고침 때 자동 반영되지만, 엑셀 가독성을 위해 업데이트
-    try:
-        ws_status.update_cell(2, 1, level) # 이 시점엔 이전 레벨일 수 있지만 큰 문제 없음
+    try: ws_status.update_cell(2, 1, level)
     except: pass
 
 def add_xp(amt, act, val):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 🇰🇷 한국 시간 = 현재 서버 시간(UTC) + 9시간
+    now_kst = datetime.now() + timedelta(hours=9)
+    ts = now_kst.strftime("%Y-%m-%d %H:%M:%S")
+    
     add = int(amt)
-    
     save_to_server(ts, act, add, val)
-    
-    st.toast("✅ 저장 완료! (반영 중...)", icon="☁️")
+    st.toast("✅ 저장 완료!", icon="☁️")
     st.rerun()
 
 def undo():
     if not logs: st.toast("기록 없음", icon="🚫"); return
-    
-    # 마지막 로그 삭제
     all_rows = ws_logs.get_all_values()
     if len(all_rows) > 1:
         ws_logs.delete_rows(len(all_rows))
-        st.toast("↩️ 취소 완료! (재계산 중...)", icon="🗑️")
+        st.toast("↩️ 취소 완료!", icon="🗑️")
         st.rerun()
-    else:
-        st.toast("취소할 기록이 없어", icon="🚫")
+    else: st.toast("취소할 기록이 없어", icon="🚫")
 
 # ==========================================
-# 5. UI
+# 5. UI (한국 날짜 적용)
 # ==========================================
 st.set_page_config(page_title="관희의 성장 RPG", page_icon="☁️", layout="centered")
 st.title("🔥 관희의 성장 RPG (Cloud)")
@@ -148,11 +130,15 @@ st.markdown(f"<h2 style='color:{cur_c}; margin-top:-15px;'>{cur_n} {cur_d} <span
 with st.expander("ℹ️ 티어 정보"):
     st.table(pd.DataFrame(TIER_MAP)[['name', 'percent']])
 
-today = datetime.now().date(); d_day = (today - datetime(2026,1,1).date()).days
+# 🇰🇷 오늘 날짜도 한국 기준으로 계산
+now_kst = datetime.now() + timedelta(hours=9)
+today = now_kst.date()
+d_day = (today - datetime(2026,1,1).date()).days
 d_str = f"D{d_day}" if d_day < 0 else f"Day +{d_day+1}"
+
 st.markdown(f"<div style='text-align:center; color:#666;'>📅 {today} | 🚀 {d_str}</div><hr>", unsafe_allow_html=True)
 
-# 통계 (logs 기반)
+# 통계
 r_stat = sum([x['Value'] for x in logs if '달리기' in x['Action']])
 p_stat = sum([x['Value'] for x in logs if '팔굽혀펴기' in x['Action']])
 s_stat = sum([x['Value'] for x in logs if '자기계발' in x['Action']])
