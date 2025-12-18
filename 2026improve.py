@@ -5,33 +5,30 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # ==========================================
-# 1. 구글 시트 연동 (클라우드 호환 V15)
+# 1. 구글 시트 연동
 # ==========================================
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SHEET_NAME = "Gwanhee_Data" 
 
 @st.cache_resource
 def connect_to_sheet():
-    # Streamlit Cloud의 Secrets에서 키를 찾음
     if "gcp_service_account" in st.secrets:
         creds_dict = st.secrets["gcp_service_account"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
-    # 로컬 파일에서 키를 찾음 (테스트용)
     else:
         creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", SCOPE)
         
     client = gspread.authorize(creds)
-    sh = client.open(SHEET_NAME) # 시트 열기
+    sh = client.open(SHEET_NAME)
     
-    # 탭 확인 및 생성
     try: ws_status = sh.worksheet("Status")
-    except: 
-        ws_status = sh.add_worksheet("Status", 10, 5)
-        ws_status.append_row(["Level", "Current_XP", "Total_XP"]); ws_status.append_row([1, 0, 0])
+    except: ws_status = sh.add_worksheet("Status", 10, 5)
+    
     try: ws_logs = sh.worksheet("Logs")
     except: 
         ws_logs = sh.add_worksheet("Logs", 1000, 5)
         ws_logs.append_row(["Time", "Action", "XP", "Value"])
+        
     return ws_status, ws_logs
 
 try:
@@ -41,16 +38,45 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 데이터 관리
+# 2. 데이터 로드 및 '자동 재계산' (핵심 수정!)
 # ==========================================
-def load_data():
-    status = ws_status.get_all_records()
-    if not status: ws_status.append_row([1, 0, 0]); return 1, 0, 0, []
-    cur = status[0]
-    # Logs 역순 로드
-    logs = ws_logs.get_all_records(); logs.reverse()
-    return int(cur["Level"]), int(cur["Current_XP"]), int(cur["Total_XP"]), logs
+def calculate_status_from_logs(logs_data):
+    """로그 데이터를 기반으로 레벨과 경험치를 처음부터 다시 계산"""
+    total_xp = 0
+    for log in logs_data:
+        # 로그 형식이 딕셔너리인지 리스트인지 확인하여 처리
+        try:
+            xp = int(log.get("XP", 0)) if isinstance(log, dict) else int(log[2])
+            total_xp += xp
+        except:
+            continue
 
+    # 레벨 계산 로직
+    level = 1
+    current_xp = total_xp
+    
+    while True:
+        req_xp = level * 100
+        if current_xp >= req_xp:
+            current_xp -= req_xp
+            level += 1
+        else:
+            break
+            
+    return level, current_xp, total_xp
+
+def load_data():
+    # Logs 탭의 모든 데이터를 가져옴
+    logs_data = ws_logs.get_all_records()
+    
+    # 가져온 로그로 상태를 재계산 (동기화 문제 해결)
+    level, current_xp, total_xp = calculate_status_from_logs(logs_data)
+    
+    # 최신순 정렬
+    logs_data.reverse()
+    return level, current_xp, total_xp, logs_data
+
+# 데이터 로드
 level, current_xp, total_xp, logs = load_data()
 next_level_xp = level * 100 
 
@@ -80,39 +106,37 @@ def get_tier(lv):
 cur_n, cur_d, cur_c = get_tier(level)
 
 # ==========================================
-# 4. 액션
+# 4. 액션 (서버 저장)
 # ==========================================
-def update_server(l, c, t):
-    ws_status.update_cell(2, 1, l); ws_status.update_cell(2, 2, c); ws_status.update_cell(2, 3, t)
+def save_to_server(ts, act, xp, val):
+    # 로그 추가
+    ws_logs.append_row([ts, act, xp, val])
+    # 상태 시트 업데이트 (참고용, 실제 계산은 로그로 함)
+    # 계산은 다음 새로고침 때 자동 반영되지만, 엑셀 가독성을 위해 업데이트
+    try:
+        ws_status.update_cell(2, 1, level) # 이 시점엔 이전 레벨일 수 있지만 큰 문제 없음
+    except: pass
 
 def add_xp(amt, act, val):
-    global current_xp, total_xp, level
-    add = int(amt); current_xp += add; total_xp += add
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    add = int(amt)
     
-    lvl_up = False
-    if current_xp >= (level * 100):
-        current_xp -= (level * 100); level += 1; lvl_up = True
+    save_to_server(ts, act, add, val)
     
-    update_server(level, current_xp, total_xp)
-    ws_logs.append_row([ts, act, add, val])
-    
-    if lvl_up: st.toast(f"🎉 레벨 업! Lv.{level}", icon="🔥"); st.balloons()
-    else: st.toast("✅ 저장 완료!", icon="☁️")
+    st.toast("✅ 저장 완료! (반영 중...)", icon="☁️")
     st.rerun()
 
 def undo():
     if not logs: st.toast("기록 없음", icon="🚫"); return
-    ws_logs.delete_rows(len(ws_logs.get_all_values()))
     
-    last = logs[0]; xp_back = int(last["XP"])
-    global current_xp, total_xp, level
-    total_xp -= xp_back; current_xp -= xp_back
-    while current_xp < 0:
-        if level > 1: level -= 1; current_xp += (level * 100)
-        else: current_xp = 0; break
-    update_server(level, current_xp, total_xp)
-    st.toast("↩️ 취소 완료", icon="🗑️"); st.rerun()
+    # 마지막 로그 삭제
+    all_rows = ws_logs.get_all_values()
+    if len(all_rows) > 1:
+        ws_logs.delete_rows(len(all_rows))
+        st.toast("↩️ 취소 완료! (재계산 중...)", icon="🗑️")
+        st.rerun()
+    else:
+        st.toast("취소할 기록이 없어", icon="🚫")
 
 # ==========================================
 # 5. UI
@@ -128,6 +152,7 @@ today = datetime.now().date(); d_day = (today - datetime(2026,1,1).date()).days
 d_str = f"D{d_day}" if d_day < 0 else f"Day +{d_day+1}"
 st.markdown(f"<div style='text-align:center; color:#666;'>📅 {today} | 🚀 {d_str}</div><hr>", unsafe_allow_html=True)
 
+# 통계 (logs 기반)
 r_stat = sum([x['Value'] for x in logs if '달리기' in x['Action']])
 p_stat = sum([x['Value'] for x in logs if '팔굽혀펴기' in x['Action']])
 s_stat = sum([x['Value'] for x in logs if '자기계발' in x['Action']])
