@@ -8,13 +8,14 @@ import random
 import time
 
 # ==========================================
-# 1. 구글 시트 연동
+# 1. 구글 시트 연동 (캐시 해결을 위해 함수명 변경)
 # ==========================================
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SHEET_NAME = "Gwanhee_Data" 
 
+# 🚨 함수 이름을 변경해서 강제로 캐시를 초기화함 (v32)
 @st.cache_resource
-def connect_to_sheet():
+def connect_db_v32():
     if "gcp_service_account" in st.secrets:
         creds_dict = st.secrets["gcp_service_account"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
@@ -25,10 +26,11 @@ def connect_to_sheet():
     client = gspread.authorize(creds)
     sh = client.open(SHEET_NAME)
     
-    # V18의 필수 탭 (Status, Logs)
+    # V18의 필수 탭 (Status)
     try: ws_status = sh.worksheet("Status")
     except: ws_status = sh.add_worksheet("Status", 10, 5)
     
+    # 로그 탭
     try: ws_logs = sh.worksheet("Logs")
     except: ws_logs = sh.add_worksheet("Logs", 1000, 5); ws_logs.append_row(["Time", "Action", "XP", "Value"])
     
@@ -36,9 +38,11 @@ def connect_to_sheet():
     try: ws_col = sh.worksheet("Collection")
     except: ws_col = sh.add_worksheet("Collection", 1000, 6); ws_col.append_row(["ID", "Name", "Date", "Rarity", "Cost", "Type"])
 
+    # 3개를 리턴함 (기존 2개에서 변경됨)
     return ws_status, ws_logs, ws_col
 
-try: ws_status, ws_logs, ws_col = connect_to_sheet()
+# 함수 호출 부분도 변경됨
+try: ws_status, ws_logs, ws_col = connect_db_v32()
 except Exception as e: st.error(f"연결 실패: {e}"); st.stop()
 
 # ==========================================
@@ -105,7 +109,6 @@ cur_n, cur_c = get_tier(level)
 
 def get_streak(logs_data):
     if not logs_data: return 0
-    # 로그가 딕셔너리 리스트인지 확인
     try: dates = sorted(list(set([log['Time'].split(' ')[0] for log in logs_data])), reverse=True)
     except: return 0
     
@@ -132,7 +135,6 @@ current_streak = get_streak(logs)
 def add_xp(amt, act, val):
     ts = (datetime.now() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S")
     ws_logs.append_row([ts, act, int(amt), val])
-    # V18 감성: Status 시트에도 업데이트
     try: ws_status.update_cell(2, 1, level)
     except: pass
     
@@ -154,7 +156,6 @@ def save_pokemon(poke_id, name, rarity, cost, p_type):
     time.sleep(1.5)
     st.rerun()
 
-# 포켓몬 이름 매핑 (1세대)
 KOR_NAMES = {
     1:"이상해씨", 2:"이상해풀", 3:"이상해꽃", 4:"파이리", 5:"리자드", 6:"리자몽",
     7:"꼬부기", 8:"어니부기", 9:"거북왕", 25:"피카츄", 26:"라이츄",
@@ -184,17 +185,15 @@ def get_poke_info_fast(pid):
 # ==========================================
 st.set_page_config(page_title="관희의 성장 RPG", page_icon="📈", layout="centered")
 
-# CSS
 st.markdown("""
 <style>
     .shadow-img { filter: brightness(0) opacity(0.2); width: 60px; }
     .color-img { filter: brightness(1); width: 60px; }
     .poke-box { background-color: #f9f9f9; border-radius: 8px; padding: 5px; text-align: center; border: 1px solid #eee; margin-bottom: 5px; }
-    .big-font { font-size:18px !important; font-weight:bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# [헤더] V18 스타일 (티어 + 스트릭 + 골드)
+# [헤더]
 c1, c2 = st.columns([2,1])
 with c1: 
     st.markdown(f"<h2 style='color:{cur_c}; margin:0;'>{cur_n} <span style='font-size:18px; color:#555'>(Lv.{level})</span></h2>", unsafe_allow_html=True)
@@ -213,10 +212,9 @@ st.divider()
 tab1, tab2, tab3 = st.tabs(["🏠 성장(V18)", "🏥 뽑기", "🎒 도감"])
 
 # ------------------------------------------------------------------
-# 1. 성장 (V18 기능 복원: 그래프 + 탭 입력)
+# 1. 성장
 # ------------------------------------------------------------------
 with tab1:
-    # [V18 성장 그래프]
     st.subheader("📊 성장 그래프 (7일)")
     if logs:
         df = pd.DataFrame(logs)
@@ -225,7 +223,6 @@ with tab1:
         st.bar_chart(daily_xp, color="#FF4B4B")
     else: st.info("데이터가 쌓이면 그래프가 나타납니다!")
 
-    # [V18 입력 방식: 탭으로 구분]
     st.subheader("📝 오늘의 기록")
     t_phy, t_brain, t_routine = st.tabs(["⚔️ 피지컬", "🧠 뇌지컬", "🛡️ 루틴"])
     
@@ -257,18 +254,16 @@ with tab1:
         if r2.button("💧 물 마시기\n(10G)", use_container_width=True): add_xp(10, "💧 물 마시기", 0)
         if r3.button("🧹 방 청소\n(15G)", use_container_width=True): add_xp(15, "🧹 방 청소", 0)
 
-    # [로그 확인 및 취소]
     with st.expander("📜 최근 기록 보기"):
         if logs: st.dataframe(pd.DataFrame(logs)[['Time','Action','XP']], use_container_width=True)
         if st.button("↩️ 마지막 기록 취소"): undo()
 
 # ------------------------------------------------------------------
-# 2. 뽑기 (V30 기능)
+# 2. 뽑기
 # ------------------------------------------------------------------
 with tab2:
     st.markdown("### ❓ 운명의 뽑기 (1세대)")
     st.info(f"현재 보유 골드: **{gold} G**")
-    
     st.write("")
     if st.button("🔮 500G 뽑기!", type="primary", use_container_width=True):
         if gold >= 500:
@@ -278,7 +273,7 @@ with tab2:
         else: st.error("골드가 부족합니다! 성장 탭에서 운동하세요!")
 
 # ------------------------------------------------------------------
-# 3. 도감 (V31 모바일 최적화 뷰)
+# 3. 도감 (모바일 최적화)
 # ------------------------------------------------------------------
 with tab3:
     if 'dex_page' not in st.session_state: st.session_state['dex_page'] = 0
@@ -299,7 +294,6 @@ with tab3:
             
     st.divider()
     
-    # 3열 배치 로직 (모바일 깨짐 방지)
     poke_ids = list(range(start, end))
     for i in range(0, len(poke_ids), 3):
         row_cols = st.columns(3)
